@@ -1,0 +1,13 @@
+{
+    "name": "data-to-wav-converter",
+    "version": "1.0.0",
+    "description": "Convert files to WAV format and back",
+    "main": "index.js",
+    "scripts": {
+      "start": "node ./src/index.js"
+    },
+    "dependencies": {
+      "inquirer": "^8.2.4"
+    },
+    "type": "module"
+  }
