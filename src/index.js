@@ -1,4 +1,3 @@
-// index.js
 import fs from 'fs/promises';
 import path from 'path';
 import inquirer from 'inquirer';
@@ -11,10 +10,8 @@ class DataToWavConverter {
     }
 
     encodeToWav(inputData) {
-        // Convert input data to bytes if it's not already
-        const dataBytes = Buffer.isBuffer(inputData) ? 
-            inputData : 
-            Buffer.from(typeof inputData === 'string' ? inputData : JSON.stringify(inputData));
+        // Ensure input is a Buffer
+        const dataBytes = Buffer.isBuffer(inputData) ? inputData : Buffer.from(inputData);
         
         // Create audio samples from bytes
         const samples = new Int16Array(dataBytes.length);
@@ -74,20 +71,87 @@ class DataToWavConverter {
             bytes[i] = Math.round(((samples[i] + 32768) / 65535) * 255);
         }
 
-        try {
-            // Try to parse as JSON first
-            return JSON.parse(bytes.toString());
-        } catch {
-            // If not JSON, return as string
-            return bytes.toString();
+        return bytes;
+    }
+}
+
+async function validatePath(inputPath, isInput = true) {
+    try {
+        const resolvedPath = path.resolve(inputPath);
+        
+        if (isInput) {
+            // Check if input file exists
+            await fs.access(resolvedPath);
+            return resolvedPath;
+        } else {
+            // For output path, ensure directory exists
+            const dir = path.dirname(resolvedPath);
+            await fs.mkdir(dir, { recursive: true });
+            return resolvedPath;
+        }
+    } catch (error) {
+        if (isInput) {
+            throw new Error(`Invalid input path: ${inputPath} (${error.message})`);
+        } else {
+            throw new Error(`Invalid output directory: ${path.dirname(inputPath)} (${error.message})`);
         }
     }
+}
+
+async function suggestOutputPath(inputPath, isEncoding = true) {
+    const dir = path.dirname(inputPath);
+    const fullName = path.basename(inputPath);
+    
+    if (isEncoding) {
+        // For encoding: add .wav to the full filename
+        return path.join(dir, `${fullName}.wav`);
+    } else {
+        // For decoding: remove .wav extension
+        if (!fullName.toLowerCase().endsWith('.wav')) {
+            throw new Error('Input file must be a WAV file');
+        }
+        return path.join(dir, fullName.slice(0, -4));
+    }
+}
+
+async function getOutputPath(suggestedPath) {
+    const { useCustomPath } = await inquirer.prompt([
+        {
+            type: 'confirm',
+            name: 'useCustomPath',
+            message: `Default output path is: ${suggestedPath}\nWould you like to specify a different output path?`,
+            default: false
+        }
+    ]);
+
+    if (!useCustomPath) {
+        return suggestedPath;
+    }
+
+    const { customPath } = await inquirer.prompt([
+        {
+            type: 'input',
+            name: 'customPath',
+            message: 'Enter your desired output path:',
+            validate: async (input) => {
+                try {
+                    await validatePath(input, false);
+                    return true;
+                } catch (error) {
+                    return error.message;
+                }
+            }
+        }
+    ]);
+
+    return customPath;
 }
 
 async function main() {
     const converter = new DataToWavConverter();
 
     while (true) {
+        console.clear();
         const { action } = await inquirer.prompt([
             {
                 type: 'list',
@@ -106,54 +170,83 @@ async function main() {
         }
 
         if (action === 'Convert file to WAV') {
-            const { filePath } = await inquirer.prompt([
-                {
-                    type: 'input',
-                    name: 'filePath',
-                    message: 'Enter the path to the file you want to convert:'
-                }
-            ]);
-
             try {
-                const inputData = await fs.readFile(filePath);
+                const { filePath } = await inquirer.prompt([
+                    {
+                        type: 'input',
+                        name: 'filePath',
+                        message: 'Enter the path to the file you want to convert:',
+                        validate: async (input) => {
+                            try {
+                                await validatePath(input, true);
+                                return true;
+                            } catch (error) {
+                                return error.message;
+                            }
+                        }
+                    }
+                ]);
+
+                const resolvedInputPath = await validatePath(filePath, true);
+                const suggestedOutputPath = await suggestOutputPath(resolvedInputPath, true);
+                const outputPath = await getOutputPath(suggestedOutputPath);
+                const resolvedOutputPath = await validatePath(outputPath, false);
+
+                const inputData = await fs.readFile(resolvedInputPath);
                 const wavBuffer = converter.encodeToWav(inputData);
-                const outputPath = path.join(
-                    path.dirname(filePath),
-                    `${path.basename(filePath)}.wav`
-                );
-                await fs.writeFile(outputPath, wavBuffer);
-                console.log(`Successfully converted! Saved to: ${outputPath}`);
+                
+                await fs.writeFile(resolvedOutputPath, wavBuffer);
+                console.log(`\nSuccessfully converted! Saved to: ${resolvedOutputPath}`);
             } catch (error) {
-                console.error('Error converting file:', error.message);
+                console.error('\nError converting file:', error.message);
             }
         }
 
         if (action === 'Decode WAV file') {
-            const { filePath, outputPath } = await inquirer.prompt([
-                {
-                    type: 'input',
-                    name: 'filePath',
-                    message: 'Enter the path to the WAV file:'
-                },
-                {
-                    type: 'input',
-                    name: 'outputPath',
-                    message: 'Enter the path where you want to save the decoded file (including file name):'
-                }
-            ]);
-        
             try {
-                const wavData = await fs.readFile(filePath);
+                const { filePath } = await inquirer.prompt([
+                    {
+                        type: 'input',
+                        name: 'filePath',
+                        message: 'Enter the path to the WAV file:',
+                        validate: async (input) => {
+                            if (!input.toLowerCase().endsWith('.wav')) {
+                                return 'Please provide a WAV file';
+                            }
+                            try {
+                                await validatePath(input, true);
+                                return true;
+                            } catch (error) {
+                                return error.message;
+                            }
+                        }
+                    }
+                ]);
+
+                const resolvedInputPath = await validatePath(filePath, true);
+                const suggestedOutputPath = await suggestOutputPath(resolvedInputPath, false);
+                const outputPath = await getOutputPath(suggestedOutputPath);
+                const resolvedOutputPath = await validatePath(outputPath, false);
+
+                const wavData = await fs.readFile(resolvedInputPath);
                 const decodedData = converter.decodeFromWav(wavData);
-        
-                // Ensure decoded data is saved as a valid file
-                const outputFilePath = path.extname(outputPath) ? outputPath : path.join(outputPath, 'decoded_output.txt');
-        
-                await fs.writeFile(outputFilePath, decodedData);
-                console.log(`Successfully decoded! Saved to: ${outputFilePath}`);
+                
+                await fs.writeFile(resolvedOutputPath, decodedData);
+                console.log(`\nSuccessfully decoded! Saved to: ${resolvedOutputPath}`);
             } catch (error) {
-                console.error('Error decoding file:', error.message);
+                console.error('\nError decoding file:', error.message);
             }
         }
-    }        }
+
+        //pause before next action
+        await inquirer.prompt([
+            {
+                type: 'input',
+                name: 'continue',
+                message: '\nPress Enter to continue...',
+            }
+        ]);
+    }
+}
+
 main().catch(console.error);
